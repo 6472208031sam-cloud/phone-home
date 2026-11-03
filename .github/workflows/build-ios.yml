@@ -1,0 +1,46 @@
+name: Build iOS (unsigned)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Archive (unsigned)
+        run: |
+          xcodebuild \
+            -project PhoneHome.xcodeproj \
+            -scheme PhoneHome \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$PWD/build/PhoneHome.xcarchive" \
+            clean archive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package unsigned .ipa
+        run: |
+          APP_PATH=$(find "$PWD/build/PhoneHome.xcarchive/Products/Applications" -maxdepth 1 -name "*.app" | head -1)
+          test -n "$APP_PATH" || { echo "No .app found in archive"; exit 1; }
+          rm -rf Payload PhoneHome-unsigned.ipa
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          zip -r PhoneHome-unsigned.ipa Payload
+
+      - name: Upload .ipa artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhoneHome-unsigned
+          path: PhoneHome-unsigned.ipa
