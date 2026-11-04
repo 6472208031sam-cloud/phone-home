@@ -17,8 +17,8 @@ final class Beacon: NSObject, CLLocationManagerDelegate {
     static let dbURL = "https://phone-home-2b7ee-default-rtdb.firebaseio.com"
     static let readId = "SPIKE1"
     static let joinCode = "phonehome-spike-join-2026"
-    static let phoneId = "spikeI"
-    static let label = "Spike iPhone"
+    static let phoneId = "spike2Luca"
+    static let label = "Spike Luca"
     static let devTag = "i-SP"
 
     private let lm = CLLocationManager()
