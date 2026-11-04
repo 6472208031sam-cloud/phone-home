@@ -18,6 +18,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
         Self.scheduleAppRefresh()
         Beacon.shared.requestAuthorization()
+        Beacon.shared.startSignificantChanges()
+        if launchOptions?[.location] != nil {
+            // iOS relaunched the app for a significant-change event.
+            Beacon.shared.log("WAKE", "launched by a location event (significant-change relaunch)")
+            Beacon.shared.movedWake()
+        }
         window = UIWindow(frame: UIScreen.main.bounds)
         window?.rootViewController = ViewController()
         window?.makeKeyAndVisible()
@@ -49,6 +55,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     /// iOS woke the app: run one beacon cycle, then book the next slot.
     private static func handleAppRefresh(_ task: BGAppRefreshTask) {
         Beacon.shared.log("WAKE", "BGAppRefresh fired")
+        Beacon.shared.startSignificantChanges() // re-arm movement wakes on every refresh wake too
         var finished = false
         task.expirationHandler = {
             if !finished {

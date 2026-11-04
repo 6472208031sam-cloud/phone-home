@@ -257,10 +257,51 @@ final class Beacon: NSObject, CLLocationManagerDelegate {
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard let cb = fixCompletion, let loc = locations.last else { return }
-        fixCompletion = nil
-        fixTimeoutWork?.cancel()
-        cb(loc)
+        if let cb = fixCompletion, let loc = locations.last {
+            fixCompletion = nil
+            fixTimeoutWork?.cancel()
+            cb(loc)
+            return
+        }
+        // No fix pending: a significant-change delivery — a movement wake.
+        if let loc = locations.last {
+            log("SLC", "movement delivery — sig-change fix ±\(Int(loc.horizontalAccuracy.rounded()))m @ \(Self.stamp(loc.timestamp))")
+        } else {
+            log("SLC", "movement delivery (no location attached)")
+        }
+        startSignificantChanges() // keep the service armed after a relaunch
+        movedWake()
+    }
+
+    // MARK: - Significant location changes (v2 movement wakes)
+
+    /// Arms Apple's significant-location-change service — a separate wake
+    /// channel from BG refresh: iOS relaunches the app on ~500 m moves,
+    /// even after the user has closed it, and it is not rationed the way
+    /// background refresh is for a little-used app.
+    func startSignificantChanges() {
+        let status = lm.authorizationStatus
+        guard status == .authorizedAlways || status == .authorizedWhenInUse else {
+            log("SLC", "not armed — location not authorized (status \(status.rawValue))")
+            return
+        }
+        lm.startMonitoringSignificantLocationChanges()
+        d.set(true, forKey: "ph_slcArmed")
+        log("SLC", "significant-change monitoring started")
+    }
+
+    var slcArmed: Bool { d.bool(forKey: "ph_slcArmed") }
+
+    /// A movement wake (SLC delivery or location relaunch), de-duped to at
+    /// most one per 5 minutes so a launch + its delivery can't double-ping.
+    func movedWake() {
+        let last = d.double(forKey: "ph_lastMoved")
+        if last > 0 && Date().timeIntervalSince1970 - last < 300 {
+            log("SLC", "movement wake skipped — last moved wake <5 min ago")
+            return
+        }
+        d.set(Date().timeIntervalSince1970, forKey: "ph_lastMoved")
+        runWake(src: everWrote ? "moved" : "first") {}
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
@@ -274,6 +315,7 @@ final class Beacon: NSObject, CLLocationManagerDelegate {
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         log("SYS", "location authorization -> \(manager.authorizationStatus.rawValue) (2=whenInUse 3=always)")
         requestAuthorization() // escalates whenInUse -> Always once
+        startSignificantChanges()
         if (manager.authorizationStatus == .authorizedWhenInUse
             || manager.authorizationStatus == .authorizedAlways) && !everWrote {
             runWake(src: "first") {}

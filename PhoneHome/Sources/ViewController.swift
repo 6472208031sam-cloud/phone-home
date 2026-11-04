@@ -37,7 +37,7 @@ class ViewController: UIViewController {
         ])
 
         let title = UILabel()
-        title.text = "Phone Home Spike v1"
+        title.text = "Phone Home Spike v2"
         title.font = .boldSystemFont(ofSize: 22)
         stack.addArrangedSubview(title)
 
@@ -45,6 +45,7 @@ class ViewController: UIViewController {
         sub.numberOfLines = 0
         sub.font = .systemFont(ofSize: 13)
         sub.text = "Step 1 cadence spike — household \(Beacon.readId) · phone \(Beacon.phoneId)\n"
+            + "v2 adds movement wakes (significant-change) beside the hourly refresh.\n"
             + "Cadence is ABOUT hourly: iOS decides; this log is the evidence."
         stack.addArrangedSubview(sub)
 
@@ -121,7 +122,8 @@ class ViewController: UIViewController {
             + "last fix: \(d.string(forKey: "ph_lastFix") ?? "—")\n"
             + "last write: \(d.string(forKey: "ph_lastWrite") ?? "—")\n"
             + "next wake armed (earliest): \(nextWake > 0 ? Beacon.stamp(Date(timeIntervalSince1970: nextWake)) : "not armed")\n"
-            + "bg refresh status: \(UIApplication.shared.backgroundRefreshStatus.rawValue) (2=available)"
+            + "bg refresh status: \(UIApplication.shared.backgroundRefreshStatus.rawValue) (2=available)\n"
+            + "movement wakes (SLC): \(Beacon.shared.slcArmed ? "armed" : "not armed")"
         logView.text = Beacon.shared.logText()
     }
 }
