@@ -19,6 +19,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         Self.scheduleAppRefresh()
         Beacon.shared.requestAuthorization()
         Beacon.shared.startSignificantChanges()
+        Beacon.shared.applyTrackingMode() // restarts the Always live session after any relaunch
         if launchOptions?[.location] != nil {
             // iOS relaunched the app for a significant-change event.
             Beacon.shared.log("WAKE", "launched by a location event (significant-change relaunch)")
@@ -56,6 +57,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     private static func handleAppRefresh(_ task: BGAppRefreshTask) {
         Beacon.shared.log("WAKE", "BGAppRefresh fired")
         Beacon.shared.startSignificantChanges() // re-arm movement wakes on every refresh wake too
+        Beacon.shared.applyTrackingMode()
         var finished = false
         task.expirationHandler = {
             if !finished {

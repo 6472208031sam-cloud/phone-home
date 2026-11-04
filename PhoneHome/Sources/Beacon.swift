@@ -263,12 +263,14 @@ final class Beacon: NSObject, CLLocationManagerDelegate {
             cb(loc)
             return
         }
-        // No fix pending: a significant-change delivery — a movement wake.
-        if let loc = locations.last {
-            log("SLC", "movement delivery — sig-change fix ±\(Int(loc.horizontalAccuracy.rounded()))m @ \(Self.stamp(loc.timestamp))")
-        } else {
-            log("SLC", "movement delivery (no location attached)")
+        guard let loc = locations.last else { return }
+        if liveOn {
+            // Always mode: a continuous-session update — drive the ping cadence.
+            liveTick(loc)
+            return
         }
+        // No fix pending, no live session: a significant-change delivery — a movement wake.
+        log("SLC", "movement delivery — sig-change fix ±\(Int(loc.horizontalAccuracy.rounded()))m @ \(Self.stamp(loc.timestamp))")
         startSignificantChanges() // keep the service armed after a relaunch
         movedWake()
     }
@@ -302,6 +304,83 @@ final class Beacon: NSObject, CLLocationManagerDelegate {
         }
         d.set(Date().timeIntervalSince1970, forKey: "ph_lastMoved")
         runWake(src: everWrote ? "moved" : "first") {}
+    }
+
+    // MARK: - Always mode (v3: continuous session + Gentle/Always toggle, R8)
+
+    /// Per-phone tracking style: "gentle" (layered wakes) or "always"
+    /// (continuous location session). Default gentle.
+    var trackingMode: String {
+        get { d.string(forKey: "ph_mode") ?? "gentle" }
+        set { d.set(newValue, forKey: "ph_mode") }
+    }
+    private(set) var liveOn = false
+    var stoodDown: Bool { d.bool(forKey: "ph_stoodDown") }
+
+    /// Applies the chosen style, with the low-battery stand-down (<=20% and
+    /// not charging -> live session off until power recovers). Safe to call
+    /// on every launch / wake / toggle; also the resurrection path after
+    /// iOS kills the app and a movement event relaunches it.
+    func applyTrackingMode() {
+        guard trackingMode == "always" else {
+            if liveOn { stopLiveSession(); log("MODE", "Gentle — live session off") }
+            return
+        }
+        let (batt, charging) = battery()
+        if batt <= 20 && !charging {
+            if liveOn { stopLiveSession(); log("MODE", "Always stood down — battery \(batt)% and not charging") }
+            d.set(true, forKey: "ph_stoodDown")
+            return
+        }
+        if stoodDown { log("MODE", "power recovered (\(batt)%\(charging ? ", charging" : "")) — Always resuming") }
+        d.set(false, forKey: "ph_stoodDown")
+        startLiveSession()
+    }
+
+    private func startLiveSession() {
+        let status = lm.authorizationStatus
+        guard status == .authorizedAlways || status == .authorizedWhenInUse else {
+            log("MODE", "live session not started — location not authorized (status \(status.rawValue))")
+            return
+        }
+        if liveOn { return }
+        lm.distanceFilter = 100
+        lm.allowsBackgroundLocationUpdates = true
+        lm.pausesLocationUpdatesAutomatically = false
+        lm.startUpdatingLocation()
+        liveOn = true
+        log("MODE", "live session STARTED (Always; best accuracy, 100 m filter, no auto-pause)")
+    }
+
+    private func stopLiveSession() {
+        lm.stopUpdatingLocation()
+        lm.distanceFilter = kCLDistanceFilterNone
+        liveOn = false
+    }
+
+    /// One continuous-session update in Always mode: fire the hourly beat
+    /// when due (>=55 min since the last ping), else a moved ping under
+    /// the R4 gates (>=500 m from last reported, >=15 min since last moved).
+    private func liveTick(_ loc: CLLocation) {
+        if running { return }
+        let (batt, charging) = battery()
+        if batt <= 20 && !charging { applyTrackingMode(); return }
+        let now = Date().timeIntervalSince1970
+        let lastPing = d.double(forKey: "ph_lastPingAt")
+        if lastPing == 0 || now - lastPing >= 55 * 60 {
+            runWake(src: everWrote ? "hourly" : "first") {}
+            return
+        }
+        let lastLat = d.double(forKey: "ph_lastLat")
+        let lastLng = d.double(forKey: "ph_lastLng")
+        let lastMoved = d.double(forKey: "ph_lastMoved")
+        if lastLat != 0 {
+            let from = CLLocation(latitude: lastLat, longitude: lastLng)
+            if loc.distance(from: from) >= 500 && now - lastMoved >= 15 * 60 {
+                d.set(now, forKey: "ph_lastMoved")
+                runWake(src: "moved") {}
+            }
+        }
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
@@ -387,6 +466,9 @@ final class Beacon: NSObject, CLLocationManagerDelegate {
                             self.log("DB", "PUT pings/\(day)/\(tsMs) -> HTTP \(code2)")
                             if code1 == 200 && code2 == 200 {
                                 self.d.set(true, forKey: "ph_everWrote")
+                                self.d.set(Date().timeIntervalSince1970, forKey: "ph_lastPingAt")
+                                self.d.set(loc.coordinate.latitude, forKey: "ph_lastLat")
+                                self.d.set(loc.coordinate.longitude, forKey: "ph_lastLng")
                                 self.d.set("OK \(Self.stamp(Date())) src=\(src)", forKey: "ph_lastWrite")
                             } else {
                                 self.d.set("FAILED latest=\(code1) ping=\(code2)", forKey: "ph_lastWrite")

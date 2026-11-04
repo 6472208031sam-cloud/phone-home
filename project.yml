@@ -16,9 +16,9 @@ targets:
     info:
       path: PhoneHome/Info.plist
       properties:
-        CFBundleDisplayName: Phone Home Spike v2
-        CFBundleShortVersionString: "2.0"
-        CFBundleVersion: "2"
+        CFBundleDisplayName: Phone Home Spike v3
+        CFBundleShortVersionString: "3.0"
+        CFBundleVersion: "3"
         ITSAppUsesNonExemptEncryption: false
         NSLocationWhenInUseUsageDescription: "Phone Home Spike uses your location to send its hourly check-in."
         NSLocationAlwaysAndWhenInUseUsageDescription: "Phone Home Spike needs background location so its hourly check-in still works when the app is closed."

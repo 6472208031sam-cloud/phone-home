@@ -37,7 +37,7 @@ class ViewController: UIViewController {
         ])
 
         let title = UILabel()
-        title.text = "Phone Home Spike v2"
+        title.text = "Phone Home Spike v3"
         title.font = .boldSystemFont(ofSize: 22)
         stack.addArrangedSubview(title)
 
@@ -45,7 +45,7 @@ class ViewController: UIViewController {
         sub.numberOfLines = 0
         sub.font = .systemFont(ofSize: 13)
         sub.text = "Step 1 cadence spike — household \(Beacon.readId) · phone \(Beacon.phoneId)\n"
-            + "v2 adds movement wakes (significant-change) beside the hourly refresh.\n"
+            + "v3 adds the Gentle/Always tracking-style toggle (Always = continuous session).\n"
             + "Cadence is ABOUT hourly: iOS decides; this log is the evidence."
         stack.addArrangedSubview(sub)
 
@@ -59,6 +59,18 @@ class ViewController: UIViewController {
         beaconSwitch.addTarget(self, action: #selector(toggleChanged), for: .valueChanged)
         toggleRow.addArrangedSubview(beaconSwitch)
         stack.addArrangedSubview(toggleRow)
+
+        let modeRow = UIStackView()
+        modeRow.axis = .horizontal
+        modeRow.spacing = 8
+        let modeLabel = UILabel()
+        modeLabel.text = "Tracking style"
+        modeRow.addArrangedSubview(modeLabel)
+        let modeSeg = UISegmentedControl(items: ["Gentle", "Always"])
+        modeSeg.selectedSegmentIndex = Beacon.shared.trackingMode == "always" ? 1 : 0
+        modeSeg.addTarget(self, action: #selector(modeChanged(_:)), for: .valueChanged)
+        modeRow.addArrangedSubview(modeSeg)
+        stack.addArrangedSubview(modeRow)
 
         statusLabel.numberOfLines = 0
         statusLabel.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
@@ -98,6 +110,14 @@ class ViewController: UIViewController {
         refresh()
     }
 
+    @objc private func modeChanged(_ seg: UISegmentedControl) {
+        let mode = seg.selectedSegmentIndex == 1 ? "always" : "gentle"
+        Beacon.shared.trackingMode = mode
+        Beacon.shared.log("MODE", "tracking style set to \(mode) in app")
+        Beacon.shared.applyTrackingMode()
+        refresh()
+    }
+
     @objc private func pingNow() {
         Beacon.shared.runWake(src: "manual") { [weak self] in
             DispatchQueue.main.async { self?.refresh() }
@@ -123,7 +143,11 @@ class ViewController: UIViewController {
             + "last write: \(d.string(forKey: "ph_lastWrite") ?? "—")\n"
             + "next wake armed (earliest): \(nextWake > 0 ? Beacon.stamp(Date(timeIntervalSince1970: nextWake)) : "not armed")\n"
             + "bg refresh status: \(UIApplication.shared.backgroundRefreshStatus.rawValue) (2=available)\n"
-            + "movement wakes (SLC): \(Beacon.shared.slcArmed ? "armed" : "not armed")"
+            + "movement wakes (SLC): \(Beacon.shared.slcArmed ? "armed" : "not armed")\n"
+            + "tracking style: \(Beacon.shared.trackingMode)"
+            + (Beacon.shared.trackingMode == "always"
+                ? (Beacon.shared.stoodDown ? " (stood down — low battery)" : " · live session \(Beacon.shared.liveOn ? "ON" : "off")")
+                : "")
         logView.text = Beacon.shared.logText()
     }
 }
