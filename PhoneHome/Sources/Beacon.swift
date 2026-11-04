@@ -367,7 +367,10 @@ final class Beacon: NSObject, CLLocationManagerDelegate {
         if batt <= 20 && !charging { applyTrackingMode(); return }
         let now = Date().timeIntervalSince1970
         let lastPing = d.double(forKey: "ph_lastPingAt")
-        if lastPing == 0 || now - lastPing >= 55 * 60 {
+        let lastAttempt = d.double(forKey: "ph_lastAttemptAt")
+        // After a failed attempt the fix is safe in the outbox (v4), so a
+        // re-attempt can wait 10 min instead of firing on every update.
+        if (lastPing == 0 || now - lastPing >= 55 * 60) && now - lastAttempt >= 10 * 60 {
             runWake(src: everWrote ? "hourly" : "first") {}
             return
         }
@@ -411,11 +414,90 @@ final class Beacon: NSObject, CLLocationManagerDelegate {
         return (pct, state == .charging || state == .full)
     }
 
+    // MARK: - Outbox (v4, R9: queue failed pings, backfill on reconnect)
+
+    /// Pings whose history write failed (usually no data path) are queued
+    /// here with their TRUE fix time and flushed oldest-first once a write
+    /// succeeds again. A flushed ping never overwrites a newer `latest`.
+    private var outboxFlushing = false
+
+    private func outboxLoad() -> [[String: Any]] {
+        guard let data = d.data(forKey: "ph_outbox"),
+              let arr = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return [] }
+        return arr
+    }
+
+    private func outboxSave(_ q: [[String: Any]]) {
+        if let data = try? JSONSerialization.data(withJSONObject: q) {
+            d.set(data, forKey: "ph_outbox")
+        }
+    }
+
+    var outboxCount: Int { outboxLoad().count }
+
+    private func outboxEnqueue(_ ping: [String: Any]) {
+        var q = outboxLoad()
+        q.append(ping)
+        if q.count > 500 { q.removeFirst(q.count - 500) }
+        outboxSave(q)
+        let tsMs = (ping["ts"] as? NSNumber)?.intValue ?? 0
+        log("OUTBOX", "queued src=\(ping["src"] as? String ?? "?") fixTime=\(Self.stamp(Date(timeIntervalSince1970: Double(tsMs) / 1000))) — \(q.count) in queue")
+    }
+
+    /// Identity + join + flush without taking a fresh fix — for launch-time
+    /// attempts (e.g. the user opening the app after being offline).
+    func flushOutboxIfPossible() {
+        if outboxCount == 0 { return }
+        ensureIdentity { ok in
+            guard ok else { return }
+            self.joinIfNeeded { joinedOk in
+                if joinedOk { self.flushOutbox() }
+            }
+        }
+    }
+
+    private func flushOutbox() {
+        if outboxFlushing { return }
+        var q = outboxLoad()
+        if q.isEmpty { return }
+        outboxFlushing = true
+        log("OUTBOX", "flush starting — \(q.count) queued")
+        func step() {
+            guard let entry = q.first else {
+                self.outboxFlushing = false
+                self.log("OUTBOX", "flush complete — queue empty")
+                return
+            }
+            let tsMs = (entry["ts"] as? NSNumber)?.intValue ?? 0
+            let day = Self.torontoDay(Date(timeIntervalSince1970: Double(tsMs) / 1000))
+            let base = "/households/\(Self.readId)/phones/\(Self.phoneId)"
+            self.dbPut(path: base + "/pings/\(day)/\(tsMs)", obj: entry) { code in
+                guard code == 200 else {
+                    self.outboxFlushing = false
+                    self.log("OUTBOX", "flush stopped — PUT pings -> HTTP \(code); \(q.count) remain")
+                    return
+                }
+                q.removeFirst()
+                self.outboxSave(q)
+                if Double(tsMs) > self.d.double(forKey: "ph_latestTs") {
+                    self.dbPut(path: base + "/latest", obj: entry) { lcode in
+                        if lcode == 200 { self.d.set(Double(tsMs), forKey: "ph_latestTs") }
+                        step()
+                    }
+                } else {
+                    step()
+                }
+            }
+        }
+        step()
+    }
+
     // MARK: - The wake cycle
 
     func runWake(src requestedSrc: String, completion: @escaping () -> Void) {
         if running { log("WAKE", "wake already running — skipping"); completion(); return }
         running = true
+        d.set(Date().timeIntervalSince1970, forKey: "ph_lastAttemptAt")
         var src = requestedSrc
         log("WAKE", "begin src=\(src)")
         let done: () -> Void = {
@@ -461,17 +543,24 @@ final class Beacon: NSObject, CLLocationManagerDelegate {
                     let base = "/households/\(Self.readId)/phones/\(Self.phoneId)"
                     self.dbPut(path: base + "/latest", obj: ping) { code1 in
                         self.log("DB", "PUT latest -> HTTP \(code1)")
+                        if code1 == 200 { self.d.set(Double(tsMs), forKey: "ph_latestTs") }
                         let day = Self.torontoDay(loc.timestamp)
                         self.dbPut(path: base + "/pings/\(day)/\(tsMs)", obj: ping) { code2 in
                             self.log("DB", "PUT pings/\(day)/\(tsMs) -> HTTP \(code2)")
-                            if code1 == 200 && code2 == 200 {
+                            if code2 == 200 {
+                                // History has the ping — that is what "reported"
+                                // means; a failed latest self-heals next ping.
                                 self.d.set(true, forKey: "ph_everWrote")
                                 self.d.set(Date().timeIntervalSince1970, forKey: "ph_lastPingAt")
                                 self.d.set(loc.coordinate.latitude, forKey: "ph_lastLat")
                                 self.d.set(loc.coordinate.longitude, forKey: "ph_lastLng")
                                 self.d.set("OK \(Self.stamp(Date())) src=\(src)", forKey: "ph_lastWrite")
+                                self.flushOutbox()
                             } else {
-                                self.d.set("FAILED latest=\(code1) ping=\(code2)", forKey: "ph_lastWrite")
+                                // R9: queue it with its true fix time; a later
+                                // flush files it into history at its true slot.
+                                self.outboxEnqueue(ping)
+                                self.d.set("QUEUED latest=\(code1) ping=\(code2)", forKey: "ph_lastWrite")
                             }
                             done()
                         }

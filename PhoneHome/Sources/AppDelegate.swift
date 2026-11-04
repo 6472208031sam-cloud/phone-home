@@ -20,6 +20,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         Beacon.shared.requestAuthorization()
         Beacon.shared.startSignificantChanges()
         Beacon.shared.applyTrackingMode() // restarts the Always live session after any relaunch
+        Beacon.shared.flushOutboxIfPossible() // v4: backfill anything queued while offline (R9)
         if launchOptions?[.location] != nil {
             // iOS relaunched the app for a significant-change event.
             Beacon.shared.log("WAKE", "launched by a location event (significant-change relaunch)")

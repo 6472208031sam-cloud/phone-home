@@ -37,7 +37,7 @@ class ViewController: UIViewController {
         ])
 
         let title = UILabel()
-        title.text = "Phone Home Spike v3"
+        title.text = "Phone Home Spike v4"
         title.font = .boldSystemFont(ofSize: 22)
         stack.addArrangedSubview(title)
 
@@ -45,7 +45,7 @@ class ViewController: UIViewController {
         sub.numberOfLines = 0
         sub.font = .systemFont(ofSize: 13)
         sub.text = "Step 1 cadence spike — household \(Beacon.readId) · phone \(Beacon.phoneId)\n"
-            + "v3 adds the Gentle/Always tracking-style toggle (Always = continuous session).\n"
+            + "v4 adds the R9 outbox: failed pings queue on-phone and backfill on reconnect.\n"
             + "Cadence is ABOUT hourly: iOS decides; this log is the evidence."
         stack.addArrangedSubview(sub)
 
@@ -144,6 +144,7 @@ class ViewController: UIViewController {
             + "next wake armed (earliest): \(nextWake > 0 ? Beacon.stamp(Date(timeIntervalSince1970: nextWake)) : "not armed")\n"
             + "bg refresh status: \(UIApplication.shared.backgroundRefreshStatus.rawValue) (2=available)\n"
             + "movement wakes (SLC): \(Beacon.shared.slcArmed ? "armed" : "not armed")\n"
+            + "outbox: \(Beacon.shared.outboxCount) queued\n"
             + "tracking style: \(Beacon.shared.trackingMode)"
             + (Beacon.shared.trackingMode == "always"
                 ? (Beacon.shared.stoodDown ? " (stood down — low battery)" : " · live session \(Beacon.shared.liveOn ? "ON" : "off")")
