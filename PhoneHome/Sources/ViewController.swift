@@ -45,7 +45,7 @@ class ViewController: UIViewController {
         sub.numberOfLines = 0
         sub.font = .systemFont(ofSize: 13)
         sub.text = "Step 1 cadence spike — household \(Beacon.readId) · phone \(Beacon.phoneId)\n"
-            + "v4 adds the R9 outbox: failed pings queue on-phone and backfill on reconnect.\n"
+            + "v4: R9 outbox + capture-first fixes + unfiltered Always heartbeat (R10).\n"
             + "Cadence is ABOUT hourly: iOS decides; this log is the evidence."
         stack.addArrangedSubview(sub)
 
