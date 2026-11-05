@@ -244,6 +244,7 @@ final class Beacon: NSObject, CLLocationManagerDelegate {
             log("FIX", "location not authorized (status \(status.rawValue))")
             completion(nil); return
         }
+        lm.desiredAccuracy = kCLLocationAccuracyBest // one-shots stay crisp even after a session ran
         fixCompletion = completion
         let work = DispatchWorkItem { [weak self] in
             guard let self = self, let cb = self.fixCompletion else { return }
@@ -344,17 +345,22 @@ final class Beacon: NSObject, CLLocationManagerDelegate {
             return
         }
         if liveOn { return }
-        lm.distanceFilter = 100
+        // R10(i): NO distance filter — a still phone must keep producing
+        // callbacks or the heartbeat has no driver (Day-1 evening lesson).
+        // Accuracy is managed to nearest-ten-metres to bound the cost.
+        lm.distanceFilter = kCLDistanceFilterNone
+        lm.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
         lm.allowsBackgroundLocationUpdates = true
         lm.pausesLocationUpdatesAutomatically = false
         lm.startUpdatingLocation()
         liveOn = true
-        log("MODE", "live session STARTED (Always; best accuracy, 100 m filter, no auto-pause)")
+        log("MODE", "live session STARTED (Always; 10 m accuracy, NO distance filter, no auto-pause)")
     }
 
     private func stopLiveSession() {
         lm.stopUpdatingLocation()
         lm.distanceFilter = kCLDistanceFilterNone
+        lm.desiredAccuracy = kCLLocationAccuracyBest
         liveOn = false
     }
 
@@ -506,40 +512,41 @@ final class Beacon: NSObject, CLLocationManagerDelegate {
             self.running = false
             completion()
         }
-        ensureIdentity { ok in
-            guard ok else {
-                self.log("WAKE", "identity failed — write skipped this wake")
-                self.d.set("identity failed", forKey: "ph_lastWrite")
-                done(); return
-            }
-            self.joinIfNeeded { joinedOk in
-                guard joinedOk else {
-                    self.d.set("join failed", forKey: "ph_lastWrite")
+        // R10(ii) capture-first: take the fix BEFORE identity. A wake that
+        // cannot authenticate still leaves with its fix in the outbox
+        // (Day-1 lesson: offline wakes died at the token gate, fixless).
+        let proceed: (CLLocation) -> Void = { loc in
+            let tsMs = Int(loc.timestamp.timeIntervalSince1970 * 1000)
+            let acc = loc.horizontalAccuracy >= 0 ? loc.horizontalAccuracy : 0
+            self.log("FIX", "lat=\(loc.coordinate.latitude) lng=\(loc.coordinate.longitude) "
+                + "acc=\(acc)m fixTime=\(Self.stamp(loc.timestamp))")
+            self.d.set("\(loc.coordinate.latitude), \(loc.coordinate.longitude) ±\(Int(acc.rounded()))m @ \(Self.stamp(loc.timestamp))",
+                       forKey: "ph_lastFix")
+            let (batt, charging) = self.battery()
+            if !self.everWrote { src = "first" }
+            let ping: [String: Any] = [
+                "lat": loc.coordinate.latitude,
+                "lng": loc.coordinate.longitude,
+                "acc": (acc * 10).rounded() / 10,
+                "ts": tsMs,
+                "batt": batt,
+                "charging": charging,
+                "src": src,
+            ]
+            self.ensureIdentity { ok in
+                guard ok else {
+                    self.log("WAKE", "identity failed — fix queued instead of lost")
+                    self.outboxEnqueue(ping)
+                    self.d.set("QUEUED (identity failed)", forKey: "ph_lastWrite")
                     done(); return
                 }
-                self.getFix { loc in
-                    guard let loc = loc else {
-                        self.log("FIX", "no fix available — write skipped this wake")
-                        self.d.set("none", forKey: "ph_lastFix")
+                self.joinIfNeeded { joinedOk in
+                    guard joinedOk else {
+                        self.log("WAKE", "join failed — fix queued instead of lost")
+                        self.outboxEnqueue(ping)
+                        self.d.set("QUEUED (join failed)", forKey: "ph_lastWrite")
                         done(); return
                     }
-                    let tsMs = Int(loc.timestamp.timeIntervalSince1970 * 1000)
-                    let acc = loc.horizontalAccuracy >= 0 ? loc.horizontalAccuracy : 0
-                    self.log("FIX", "lat=\(loc.coordinate.latitude) lng=\(loc.coordinate.longitude) "
-                        + "acc=\(acc)m fixTime=\(Self.stamp(loc.timestamp))")
-                    self.d.set("\(loc.coordinate.latitude), \(loc.coordinate.longitude) ±\(Int(acc.rounded()))m @ \(Self.stamp(loc.timestamp))",
-                               forKey: "ph_lastFix")
-                    let (batt, charging) = self.battery()
-                    if !self.everWrote { src = "first" }
-                    let ping: [String: Any] = [
-                        "lat": loc.coordinate.latitude,
-                        "lng": loc.coordinate.longitude,
-                        "acc": (acc * 10).rounded() / 10,
-                        "ts": tsMs,
-                        "batt": batt,
-                        "charging": charging,
-                        "src": src,
-                    ]
                     let base = "/households/\(Self.readId)/phones/\(Self.phoneId)"
                     self.dbPut(path: base + "/latest", obj: ping) { code1 in
                         self.log("DB", "PUT latest -> HTTP \(code1)")
@@ -566,6 +573,21 @@ final class Beacon: NSObject, CLLocationManagerDelegate {
                         }
                     }
                 }
+            }
+        }
+        // R10(iii): in Always mode the session's latest location is the fix —
+        // a one-shot request in the background mid-session proved unreliable.
+        if liveOn, let cached = lm.location, Date().timeIntervalSince(cached.timestamp) < 10 * 60 {
+            log("FIX", "using live-session location (Always wake)")
+            proceed(cached)
+        } else {
+            getFix { loc in
+                guard let loc = loc else {
+                    self.log("FIX", "no fix available — write skipped this wake")
+                    self.d.set("none", forKey: "ph_lastFix")
+                    done(); return
+                }
+                proceed(loc)
             }
         }
     }
