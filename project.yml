@@ -16,7 +16,7 @@ targets:
     info:
       path: PhoneHome/Info.plist
       properties:
-        CFBundleDisplayName: Phone Home Spike v4
+        CFBundleDisplayName: Phone Home Spike v5
         CFBundleShortVersionString: "4.0"
         CFBundleVersion: "4"
         ITSAppUsesNonExemptEncryption: false
