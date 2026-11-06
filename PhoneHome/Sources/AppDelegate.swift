@@ -79,4 +79,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func applicationDidEnterBackground(_ application: UIApplication) {
         Self.scheduleAppRefresh()
     }
+
+    func applicationDidBecomeActive(_ application: UIApplication) {
+        // v5: re-apply the tracking style on every foreground return, so a
+        // stood-down Always session resumes when the app is opened after
+        // power recovers. v4 re-applied only at process launch / refresh /
+        // toggle, so a still-resident process never resumed (spike2Luca's
+        // silent night 2026-11-05/06 after the 12:28 stand-down).
+        Beacon.shared.applyTrackingMode()
+    }
 }

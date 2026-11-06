@@ -251,6 +251,7 @@ final class Beacon: NSObject, CLLocationManagerDelegate {
             self.fixCompletion = nil
             self.log("FIX", "single fix timed out — using cached location if any")
             cb(self.lm.location)
+            self.restoreSessionParams()
         }
         fixTimeoutWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: work)
@@ -262,6 +263,7 @@ final class Beacon: NSObject, CLLocationManagerDelegate {
             fixCompletion = nil
             fixTimeoutWork?.cancel()
             cb(loc)
+            restoreSessionParams()
             return
         }
         guard let loc = locations.last else { return }
@@ -318,6 +320,82 @@ final class Beacon: NSObject, CLLocationManagerDelegate {
     private(set) var liveOn = false
     var stoodDown: Bool { d.bool(forKey: "ph_stoodDown") }
 
+    // MARK: - Adaptive gear (v5: Always battery tuning for still / indoor)
+
+    /// In Always mode the session runs in one of two gears. FULL: 10 m
+    /// accuracy, no distance filter (the v4 behaviour). COARSE: 100 m
+    /// accuracy, 50 m filter — entered when the phone is still (~15 min
+    /// within 50 m) or fixes stay indoor-grade (>100 m accuracy ~10 min),
+    /// exited on real displacement (>=250 m from the gear anchor). The
+    /// measurement behind it: ~8%/h at full gear inside a school
+    /// (2026-11-05, spike2Luca 65% -> 1%) vs ~1.2%/h at rest overnight.
+    private var gearCoarse = false
+    private var gearAnchor: CLLocation?
+    private var gearStillSince: TimeInterval = 0
+    private var gearPoorSince: TimeInterval = 0
+
+    private func applySessionParams() {
+        if gearCoarse {
+            lm.desiredAccuracy = kCLLocationAccuracyHundredMeters
+            lm.distanceFilter = 50
+        } else {
+            lm.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+            lm.distanceFilter = kCLDistanceFilterNone
+        }
+    }
+
+    private func gearReset() {
+        gearCoarse = false
+        gearAnchor = nil
+        gearStillSince = 0
+        gearPoorSince = 0
+    }
+
+    private func gearStepDown(reason: String) {
+        gearCoarse = true
+        applySessionParams()
+        let (batt, _) = battery()
+        log("GEAR", "stepped DOWN to coarse (100 m acc, 50 m filter) — \(reason); batt \(batt)%")
+    }
+
+    private func gearEval(_ loc: CLLocation) {
+        let now = Date().timeIntervalSince1970
+        guard let anchor = gearAnchor else {
+            gearAnchor = loc; gearStillSince = now; return
+        }
+        let dist = loc.distance(from: anchor)
+        if gearCoarse {
+            if dist >= 250 {
+                gearCoarse = false
+                applySessionParams()
+                gearAnchor = loc; gearStillSince = now; gearPoorSince = 0
+                log("GEAR", "stepped UP to full (10 m, no filter) — moved \(Int(dist.rounded())) m from anchor")
+            }
+            return
+        }
+        if dist > 50 {
+            gearAnchor = loc; gearStillSince = now
+        } else if now - gearStillSince >= 15 * 60 {
+            gearStepDown(reason: "still ~15 min within 50 m")
+            return
+        }
+        if loc.horizontalAccuracy < 0 || loc.horizontalAccuracy > 100 {
+            if gearPoorSince == 0 { gearPoorSince = now }
+            else if now - gearPoorSince >= 10 * 60 {
+                gearStepDown(reason: "poor fixes ~10 min (indoor-grade accuracy)")
+            }
+        } else {
+            gearPoorSince = 0
+        }
+    }
+
+    /// One-shots (getFix) temporarily set Best accuracy on the shared
+    /// manager; after one completes, restore the live session's gear
+    /// params so a wake can't silently un-coarsen the session.
+    private func restoreSessionParams() {
+        if liveOn { applySessionParams() }
+    }
+
     /// Applies the chosen style, with the low-battery stand-down (<=20% and
     /// not charging -> live session off until power recovers). Safe to call
     /// on every launch / wake / toggle; also the resurrection path after
@@ -348,19 +426,20 @@ final class Beacon: NSObject, CLLocationManagerDelegate {
         // R10(i): NO distance filter — a still phone must keep producing
         // callbacks or the heartbeat has no driver (Day-1 evening lesson).
         // Accuracy is managed to nearest-ten-metres to bound the cost.
-        lm.distanceFilter = kCLDistanceFilterNone
-        lm.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+        gearReset()
+        applySessionParams()
         lm.allowsBackgroundLocationUpdates = true
         lm.pausesLocationUpdatesAutomatically = false
         lm.startUpdatingLocation()
         liveOn = true
-        log("MODE", "live session STARTED (Always; 10 m accuracy, NO distance filter, no auto-pause)")
+        log("MODE", "live session STARTED (Always v5; full gear 10 m / no filter; adaptive coarse gear armed)")
     }
 
     private func stopLiveSession() {
         lm.stopUpdatingLocation()
         lm.distanceFilter = kCLDistanceFilterNone
         lm.desiredAccuracy = kCLLocationAccuracyBest
+        gearReset()
         liveOn = false
     }
 
@@ -371,6 +450,7 @@ final class Beacon: NSObject, CLLocationManagerDelegate {
         if running { return }
         let (batt, charging) = battery()
         if batt <= 20 && !charging { applyTrackingMode(); return }
+        gearEval(loc)
         let now = Date().timeIntervalSince1970
         let lastPing = d.double(forKey: "ph_lastPingAt")
         let lastAttempt = d.double(forKey: "ph_lastAttemptAt")
@@ -398,6 +478,7 @@ final class Beacon: NSObject, CLLocationManagerDelegate {
         fixTimeoutWork?.cancel()
         log("FIX", "requestLocation failed: \(error.localizedDescription) — using cached if any")
         cb(lm.location)
+        restoreSessionParams()
     }
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
