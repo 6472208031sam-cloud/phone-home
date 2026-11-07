@@ -324,7 +324,7 @@ final class Beacon: NSObject, CLLocationManagerDelegate {
 
     /// In Always mode the session runs in one of two gears. FULL: 10 m
     /// accuracy, no distance filter (the v4 behaviour). COARSE: 100 m
-    /// accuracy, 50 m filter — entered when the phone is still (~15 min
+    /// accuracy, no distance filter — entered when the phone is still (~15 min
     /// within 50 m) or fixes stay indoor-grade (>100 m accuracy ~10 min),
     /// exited on real displacement (>=250 m from the gear anchor). The
     /// measurement behind it: ~8%/h at full gear inside a school
@@ -337,7 +337,12 @@ final class Beacon: NSObject, CLLocationManagerDelegate {
     private func applySessionParams() {
         if gearCoarse {
             lm.desiredAccuracy = kCLLocationAccuracyHundredMeters
-            lm.distanceFilter = 50
+            // v6: NO distance filter in coarse gear. v5's 50 m filter
+            // stopped session callbacks entirely on a still phone, and
+            // with them the heartbeat (2026-11-06: gaps 6h42m / ~10h,
+            // refresh too rationed to compensate). At 100 m accuracy,
+            // cheap fixes still tick often enough to drive the beat.
+            lm.distanceFilter = kCLDistanceFilterNone
         } else {
             lm.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
             lm.distanceFilter = kCLDistanceFilterNone
@@ -355,7 +360,7 @@ final class Beacon: NSObject, CLLocationManagerDelegate {
         gearCoarse = true
         applySessionParams()
         let (batt, _) = battery()
-        log("GEAR", "stepped DOWN to coarse (100 m acc, 50 m filter) — \(reason); batt \(batt)%")
+        log("GEAR", "stepped DOWN to coarse (100 m acc, no filter) — \(reason); batt \(batt)%")
     }
 
     private func gearEval(_ loc: CLLocation) {
@@ -432,7 +437,7 @@ final class Beacon: NSObject, CLLocationManagerDelegate {
         lm.pausesLocationUpdatesAutomatically = false
         lm.startUpdatingLocation()
         liveOn = true
-        log("MODE", "live session STARTED (Always v5; full gear 10 m / no filter; adaptive coarse gear armed)")
+        log("MODE", "live session STARTED (Always v6; full gear 10 m / no filter; adaptive coarse gear armed)")
     }
 
     private func stopLiveSession() {
